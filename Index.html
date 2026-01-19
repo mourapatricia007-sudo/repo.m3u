@@ -769,4 +769,203 @@
 
             resetShare() {
                 document.getElementById('shareStep1').classList.remove('hidden');
-                document.getElementById('shareStep2'
+                document.getElementById('shareStep2').classList.add('hidden');
+                document.getElementById('sharePassword').value = '';
+            },
+
+            async generateUrl() {
+                const password = document.getElementById('sharePassword').value;
+                if (!password || password.length < 4) {
+                    this.notify('⚠️ Password must be at least 4 characters', 'warning');
+                    return;
+                }
+
+                try {
+                    this.notify('🔒 Generating encrypted URL...', 'info');
+                    
+                    let baseUrl = '';
+                    if (location.protocol === 'file:') {
+                        baseUrl = location.href.split('?')[0];
+                    } else {
+                        baseUrl = `${location.origin}${location.pathname}`;
+                    }
+
+                    if (!window.crypto || !window.crypto.subtle) {
+                        const config = { 
+                            credentials: this.state.creds, 
+                            favorites: [...this.state.favorites],
+                            _pass: btoa(password)
+                        };
+                        const encoded = btoa(JSON.stringify(config));
+                        const url = `${baseUrl}?config=${encodeURIComponent(encoded)}`;
+                        
+                        document.getElementById('shareUrl').textContent = url;
+                        document.getElementById('sharePass').textContent = password;
+                        document.getElementById('shareStep1').classList.add('hidden');
+                        document.getElementById('shareStep2').classList.remove('hidden');
+                        this.notify('✅ URL generated (Base64 encoded)', 'success');
+                        return;
+                    }
+
+                    const config = { credentials: this.state.creds, favorites: [...this.state.favorites] };
+                    const encrypted = await this.encryptData(JSON.stringify(config), password);
+                    const url = `${baseUrl}?config=${encodeURIComponent(encrypted)}`;
+                    
+                    document.getElementById('shareUrl').textContent = url;
+                    document.getElementById('sharePass').textContent = password;
+                    document.getElementById('shareStep1').classList.add('hidden');
+                    document.getElementById('shareStep2').classList.remove('hidden');
+                    this.notify('✅ Encrypted URL generated successfully!', 'success');
+                } catch (error) {
+                    console.error('Generate URL error:', error);
+                    this.notify('❌ Failed to generate URL: ' + error.message, 'error');
+                }
+            },
+
+            async copyUrl() {
+                const url = document.getElementById('shareUrl').textContent;
+                try {
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        await navigator.clipboard.writeText(url);
+                        this.notify('✅ URL copied to clipboard!', 'success');
+                    } else {
+                        const textarea = document.createElement('textarea');
+                        textarea.value = url;
+                        textarea.style.position = 'fixed';
+                        textarea.style.opacity = '0';
+                        document.body.appendChild(textarea);
+                        textarea.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(textarea);
+                        this.notify('✅ URL copied to clipboard!', 'success');
+                    }
+                } catch (error) {
+                    console.error('Copy error:', error);
+                    this.notify('❌ Failed to copy URL. Please copy manually.', 'error');
+                }
+            },
+
+            testUrl() {
+                const url = document.getElementById('shareUrl').textContent;
+                window.open(url, '_blank');
+                this.notify('🔗 Opening URL in new tab...', 'info');
+            },
+
+            async encryptData(text, password) {
+                const enc = new TextEncoder();
+                const data = enc.encode(text);
+                const pwKey = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits', 'deriveKey']);
+                const salt = crypto.getRandomValues(new Uint8Array(16));
+                const key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' }, pwKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+                const iv = crypto.getRandomValues(new Uint8Array(12));
+                const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, data);
+                const combined = new Uint8Array(salt.length + iv.length + encrypted.byteLength);
+                combined.set(salt);
+                combined.set(iv, salt.length);
+                combined.set(new Uint8Array(encrypted), salt.length + iv.length);
+                return btoa(String.fromCharCode(...combined));
+            },
+
+            async decryptData(encryptedBase64, password) {
+                const enc = new TextEncoder();
+                const combined = Uint8Array.from(atob(encryptedBase64), c => c.charCodeAt(0));
+                const salt = combined.slice(0, 16);
+                const iv = combined.slice(16, 28);
+                const encrypted = combined.slice(28);
+                const pwKey = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits', 'deriveKey']);
+                const key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' }, pwKey, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+                const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, encrypted);
+                return new TextDecoder().decode(decrypted);
+            },
+
+            switchType(type) {
+                this.state.type = type;
+                this.state.category = 'all';
+                this.state.search = '';
+                document.getElementById('searchInput').value = '';
+                
+                document.querySelectorAll('.tab').forEach(btn => {
+                    if (btn.dataset.type === type) {
+                        btn.classList.remove('inactive');
+                        btn.classList.add('active');
+                    } else {
+                        btn.classList.remove('active');
+                        btn.classList.add('inactive');
+                    }
+                });
+
+                this.notify(`📺 Switching to ${type === 'live' ? 'Live TV' : type === 'movies' ? 'Movies' : 'Series'}...`, 'info');
+                this.loadCategories();
+                this.loadChannels();
+            },
+
+            changeCategory(cat) {
+                this.state.category = cat;
+                this.notify('📂 Loading category...', 'info');
+                this.loadChannels();
+            },
+
+            handleSearch(query) {
+                this.state.search = query.trim();
+                
+                if (this.state.search) {
+                    this.state.channels = this.state.allChannels.filter(c => 
+                        (c.name || c.title || '').toLowerCase().includes(this.state.search.toLowerCase())
+                    );
+                    this.notify(`🔍 Searching in ${this.state.allChannels.length} channels...`, 'info');
+                } else {
+                    this.state.channels = [...this.state.allChannels];
+                }
+                
+                this.resetPage();
+                this.renderChannels();
+            },
+
+            buildUrl(endpoint, params = '') {
+                const { serverUrl, username, password } = this.state.creds;
+                const base = `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
+                const all = params ? `${base}&${params}` : base;
+                return `${serverUrl}/${endpoint}?${all}`;
+            },
+
+            logout() {
+                this.state.creds = null;
+                this.state.userInfo = null;
+                this.state.channels = [];
+                this.state.allChannels = [];
+                this.state.categories = [];
+                this.state.cache = {};
+                if (this.state.hls) this.state.hls.destroy();
+                document.getElementById('mainApp').classList.add('hidden');
+                document.getElementById('loginModal').classList.add('active');
+                document.getElementById('player').src = '';
+                this.notify('👋 Logged out successfully', 'info');
+            },
+
+            closeModal(id) {
+                document.getElementById(id).classList.remove('active');
+            },
+
+            notify(msg, type = 'info') {
+                const div = document.createElement('div');
+                div.className = `notification ${type}`;
+                div.textContent = msg;
+                document.getElementById('notifications').appendChild(div);
+                setTimeout(() => {
+                    div.classList.add('hiding');
+                    setTimeout(() => div.remove(), 300);
+                }, 3500);
+            },
+
+            escape(str) {
+                const div = document.createElement('div');
+                div.textContent = str;
+                return div.innerHTML;
+            }
+        };
+
+        document.addEventListener('DOMContentLoaded', () => app.init());
+    </script>
+</body>
+</html>
+
